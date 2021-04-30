@@ -49,6 +49,12 @@ func (e CancelledError) Error() string {
 	return fmt.Sprintf("Error! %v", string(e))
 }
 
+type RunningError string
+
+func (e RunningError) Error() string {
+	return fmt.Sprintf("Error! %v", string(e))
+}
+
 type TimeOutError string
 
 func (e TimeOutError) Error() string {
@@ -56,12 +62,13 @@ func (e TimeOutError) Error() string {
 }
 
 func (f *Future) Cancel() bool {
-	s := f.state.get()
-	if s == _PENDING || s == _FINISHED {
+	f.state.mu.Lock()
+	defer f.state.mu.Unlock()
+
+	if f.state.value == _CANCELLED || f.state.value == _FINISHED {
 		return false
 	}
-
-	f.state.update(_CANCELLED)
+	f.state.value = _CANCELLED
 
 	return true
 }
@@ -72,6 +79,18 @@ func (f *Future) Cancelled() bool {
 	}
 
 	return false
+}
+
+func (f *Future) markAsDone() bool {
+	f.state.mu.Lock()
+	defer f.state.mu.Unlock()
+
+	if f.state.value == _CANCELLED {
+		return false
+	}
+	f.state.value = _FINISHED
+
+	return true
 }
 
 func (f *Future) Running() bool {
@@ -102,11 +121,19 @@ func (f *Future) Result(t time.Duration) (interface{}, error) {
 	if int(t) == 0 {
 		<-f.wait
 
+		if f.Cancelled() {
+			return nil, CancelledError("Future Cancelled")
+		}
+
 		return f.result, f.err
 	}
 
 	select {
 	case <-f.wait:
+		if f.Cancelled() {
+			return nil, CancelledError("Future Cancelled")
+		}
+
 		return f.result, f.err
 	case <-time.After(t):
 		return nil, TimeOutError("Time Out")
@@ -124,11 +151,19 @@ func (f *Future) Exception(t time.Duration) (error) {
 	if int(t) == 0 {
 		<-f.wait
 
+		if f.Cancelled() {
+			return CancelledError("Future Cancelled")
+		}
+
 		return f.err
 	}
 
 	select {
 	case <-f.wait:
+		if f.Cancelled() {
+			return CancelledError("Future Cancelled")
+		}
+
 		return f.err
 	case <-time.After(t):
 		return TimeOutError("Time Out")
@@ -141,21 +176,22 @@ func (f *Future) AddDoneCallback(function func (*Future)) {
 	}()
 }
 
-func (f *Future) SetResult(r interface{}) {
+func (f *Future) SetResult(r interface{}) (error) {
+	if f.Cancelled() {
+		return CancelledError("Future Cancelled")
+	}
+	if f.Running() {
+		return RunningError("Future Running")
+	}
+
 	f.result = r
+
+	return nil
 }
 
 func (f *Future) run() {
-	if f.Cancelled() {
-		return
-	}
-
-	f.state.update(_PENDING)
-
 	defer func () {
-		f.state.update(_FINISHED)
 		f.wait <- false
-
 		go f.processCallbacks()
 	}()
 
@@ -166,13 +202,14 @@ func (f *Future) run() {
 	}
 
 	ret := f.functionValue.Call(values)
+	if !f.markAsDone() {
+		return
+	}
 
 	if len(ret) == 0 {
 		return
 	}
-
 	f.result = ret[0]
-
 	if f.functionType.NumOut() > 1 && !ret[1].IsNil() {
 		f.err = ret[1].Interface().(error)
 	}
@@ -203,8 +240,9 @@ func New(function interface{}) Callable {
 			functionType:  functionType,
 			functionValue: reflect.ValueOf(function),
 			args:          args,
-			wait:          make(chan bool),
+			wait:          make(chan bool, 1),
 			callbacks:     make(chan func(*Future)),
+			state:         State{value: _PENDING},
 		}
 
 		go future.run()

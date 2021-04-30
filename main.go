@@ -31,11 +31,12 @@ func main() {
 	f := future.New(test)(1, 2, 3)
 	f.AddDoneCallback(testCallable1)
 
-	// fmt.Printf("Cancel: %v\n", f.Cancel())
-	// fmt.Printf("Cancelled: %v\n", f.Cancelled())
 	fmt.Printf("Running: %v\n", f.Running())
 	fmt.Printf("Done: %v\n", f.Done())
 	fmt.Println(f.Result(1 * time.Second))
+
+	// fmt.Printf("Cancel: %v\n", f.Cancel())
+	// fmt.Printf("Cancelled: %v\n", f.Cancelled())
 
 	fmt.Printf("Running: %v\n", f.Running())
 	fmt.Printf("Done: %v\n", f.Done())
